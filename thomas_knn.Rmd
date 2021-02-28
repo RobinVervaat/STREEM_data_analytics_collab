@@ -84,7 +84,7 @@ We tried out a couple of values of k (the number of neighbors) to get an idea fo
 k = c(1, 5, 10, 25, 50, 250)
 ```
 
-### Get RMSE's
+### Get (R)MSE's
 With the code below we evaluated the (R)MSEs with the different values of K we tried before. 
 ```{r}
 # get requested test RMSEs
@@ -115,43 +115,44 @@ knitr::kable(knn_results, escape = FALSE, booktabs = TRUE)
 
 ### Looping over Seeds
 What the next chunk does is repeatedly run k-nearest neighbor, using a random seed from between 1-2500. In total we ran k-NN 150 times, to find out what the most commonly chosen number of neighbors is. Please note that this does take a while, depending on your computational power. 
-```{r FALSE}
-#best_k_list <- matrix(NA, nrow=2, ncol=1000)
+```{r eval=FALSE}
+best_k_list <- matrix(NA, nrow=2, ncol=1000)
 
-# define values of k to evaluate
-#k = 1:25
+ define values of k to evaluate
+k = 1:25
 
-#column_indicator = 1
+column_indicator = 1
 
-#set.seed(1)
-#for (seed_value in sample(1:2500,size=150)){
- # set.seed(seed_value)
-  #train_ind <- sample(1:nrow(DT), 0.8*nrow(DT))
+set.seed(1)
+for (seed_value in sample(1:2500,size=150)){
+ set.seed(seed_value)
+  train_ind <- sample(1:nrow(DT), 0.8*nrow(DT))
   
-  #train_football <- DT[train_ind,]
-  #test_football <- DT[-train_ind,]
+  train_football <- DT[train_ind,]
+  test_football <- DT[-train_ind,]
   
-  #knn_tst_rmse = sapply(k, make_knn_pred, training = train_football, predicting = test_football)
+  knn_tst_rmse = sapply(k, make_knn_pred, training = train_football, predicting = test_football)
 
-# determine "best" k
-  #best_k = k[which.min(knn_tst_rmse)]
-  #best_k_list[1,column_indicator] = best_k
-  #best_k_list[2,column_indicator] = seed_value
-  #column_indicator = column_indicator + 1
+ determine "best" k
+  best_k = k[which.min(knn_tst_rmse)]
+  best_k_list[1,column_indicator] = best_k
+  best_k_list[2,column_indicator] = seed_value
+  column_indicator = column_indicator + 1
   
-#print(round(100*(column_indicator / 150.0),2))
-#}
+print(round(100*(column_indicator / 150.0),2))
+}
 ```
 ### Histogram
 The following histogram shows the amount of neighbors most commonly chosen. Each seed makes a different 80/20 split, and therefore the training data is different for each seed. This results in different amounts of nearest neighbors, and shows that the most chosen number of neighbors is 4. 
-![alt text](https://drive.google.com/file/d/1K10IqZscQME9IqlFjppqvC4YOMcMDBu_/view?usp=sharing)
-```{r FALSE}
+
+![alt text](https://drive.google.com/uc?export=view&id=1K10IqZscQME9IqlFjppqvC4YOMcMDBu_)
+```{r eval=FALSE}
 hist(best_k_list[1,], breaks=1:25)
 summary(best_k_list[1,])
 ##k=4
 ```
 We then ran a regression using the complete training data, in order to train the data with as many observations as possible. We used a seed that had given as optimal number of neighbors k=4. We then predicted the wages using the test dataset, and submitted the result to kaggle.
-```{r FALSE}
+```{r eval=FALSE}
 set.seed(471)
 pred_4 = FNN::knn.reg(train = DT[, -c("player_ID","wage_eur")], 
                       test = test_submission[, -c("player_ID")], 
@@ -161,7 +162,7 @@ pred_4 = FNN::knn.reg(train = DT[, -c("player_ID","wage_eur")],
 submit <- data.table(Id = test_submission$player_ID, Predicted = pred_4)
 fwrite(submit, "./2020_02_25-Thomas_submit_Knn_4_S471.csv")
 ```
-## Concluding k-NN
+### Concluding k-NN
 Unfortunately, this gave an score of 11857. This, although better than the OLS benchmark, performed worse than several other machine learning methods we used. Additionally, before fine-tuning (using the different seeds) we had attempted to run the k-NN with 5 neighbors and 13. These numbers of neighbors were chosen based on preliminary indications using a smaller loop. These actually performed better than on the test dataset than our optimized model using 4 neighbors. This is a strikingly different result than the paper by Yaldo and Shamir (2017). However, it may be in part due to differences in data as well as a different method for judging the effectiveness of the methods. 
 
 Additionally, there are several reasons why k-NN may not be the optimal machine-learning dataset for this method. First of all, finding the optimal number of neighbors is hard. k-NN also suffers from the curse of dimensionality. As the number of variables grows, the effectiveness of k-NN decreases. It also struggles to deal with outliers, which our data has as we have shows in the descriptive statistics section. The reason it is sensitive to outliers is because it predicts based on the values closest to it, and outlier only have neighbors that are relatively far away. 
