@@ -1,0 +1,153 @@
+---
+title: "stats_thomas"
+author: "Thomas"
+date: "2/28/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Read in packages
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(tuneRanger)
+library(mlr)
+library(OpenML)
+library(e1071)
+pacman::p_load(rpart, rpart.plot, vip, pROC, randomForest, gbm)
+```
+
+```{r}
+library(ggfittext)
+library(ggalluvial)
+library(GGally)
+library(plyr)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(caTools)
+library(ggplot2)
+library(ggthemes)
+library(reshape2)
+library(data.table)
+library(tidyr)
+library(corrgram)       
+library(corrplot)
+library(formattable)
+library(cowplot)
+library(ggpubr)
+library(plot3D)
+```
+
+### Download the data and present some basic statistics.
+1 Download test and training sets. 
+-- Training = DT
+-- Test = test_submission
+
+2 create copies of the data to enable processing of different data sets for different methods
+
+```{r}
+DT_raw <- fread("https://www.dropbox.com/s/5rr2ysw6tjcnbpj/train.csv?dl=1")
+summary(DT_raw)
+test_submission_raw <- fread("https://www.dropbox.com/s/395thqjfxf7k4wi/test.csv?dl=1")
+DT_fact <- copy(DT_raw)
+test_submission_fact <- copy(test_submission_raw)
+```
+
+
+### Some data processing is needed to meld the data into certain applications 
+Factorize data. Manual process to ensure consistency for both the test and training sets. 
+
+```{r}
+#DT dataset
+DT_fact$preferred_foot <- invisible(sapply(DT_fact$preferred_foot,switch,'Right'=1,'Left'=2,'undefined'=""))
+DT_fact$work_rate <- invisible(sapply(DT_fact$work_rate,switch,'Low/Medium'=1,'High/Medium'=2,'Medium/Medium'=3,'Medium/Low'=4,'Medium/High'=5,'High/High'=6,'High/Low'=7,'Low/Low'=8,'Low/High'=9,'undefined'=""))
+DT_fact$team_position <- invisible(sapply(DT_fact$team_position,switch,'LCB'=1,'SUB'=2,'RES'=3,'LS'=4,'RB'=5,'ST'=6,'RM'=7,'LCM'=8,'LB'=9,'LM'=10,'RCB'=11,'RW'=12,'CAM'=13,'RDM'=14,'RWB'=15,'LF'=16,'CDM'=17,'LW'=18,'CB'=19,'LDM'=20,'CM'=21,'RCM'=22,'LAM'=23,'CF'=24,'RS'=25,'RF'=26,'RAM'=27,'LWB'=28,'undefined'=""))
+#Test submission factorization. Identical factorisation criteria
+test_submission_fact$preferred_foot <- invisible(sapply(test_submission_fact$preferred_foot,switch,'Right'=1,'Left'=2,'undefined'=""))
+test_submission_fact$work_rate <- invisible(sapply(test_submission_fact$work_rate,switch,'Low/Medium'=1,'High/Medium'=2,'Medium/Medium'=3,'Medium/Low'=4,'Medium/High'=5,'High/High'=6,'High/Low'=7,'Low/Low'=8,'Low/High'=9,'undefined'=""))
+test_submission_fact$team_position <- invisible(sapply(test_submission_fact$team_position,switch,'LCB'=1,'SUB'=2,'RES'=3,'LS'=4,'RB'=5,'ST'=6,'RM'=7,'LCM'=8,'LB'=9,'LM'=10,'RCB'=11,'RW'=12,'CAM'=13,'RDM'=14,'RWB'=15,'LF'=16,'CDM'=17,'LW'=18,'CB'=19,'LDM'=20,'CM'=21,'RCM'=22,'LAM'=23,'CF'=24,'RS'=25,'RF'=26,'RAM'=27,'LWB'=28,'undefined'=""))
+```
+
+Descriptive Statistics
+----
+
+### Histogram of player wages
+What we observe from the first histogram is that the data is extremely skewed to the left, with a few outliers earning much more than the rest.  We hypothesise these are the top players such as the Ronaldo's and Messi's of the world. We however also must not that there is likely no (linear) relationship to only the skill of the player. Likely these players their salary is in part so high since they are very popular with fans and bring in additional revenue through that popularity (e.g. sponsorship deals). Predicting these outliers succesfully therefore will be quite challenging, and some methods likely perform better than others. 
+```{r}
+ggplot(data = DT_raw, aes(x = wage_eur/1000))+
+  geom_histogram(binwidth = 5, fill="skyblue")+
+  theme(panel.grid.major = element_blank())+
+  theme_bw()+
+  xlab("Wage('€000)")+ NULL
+```
+<br/>
+
+### Boxplot of outliers 
+```{r}
+g <- ggplot(DT_raw, aes(team_position, wage_eur/1000))
+g + geom_boxplot(varwidth=T, fill="plum", outlier.alpha = 0.4) + scale_y_log10(breaks=c(1,10,100,1000), limits=c(1,1000)) +
+    labs(title="Box plot", 
+         subtitle="Logarithmic wages grouped by Player Position",
+         x="Player Position",
+         y="Wage('€000)") + theme(axis.text.x = element_text(angle = 90))
+```
+The lower edge represents the 25th quartile, and the top edge the 75th quartile respectively. As you can see, there is a large number of outliers that are beyond the 75th quartile, and therefore there are quite a number of players who earn more (to seriously more) than average. 
+<br/>
+
+### Boxplot left vs right foot
+
+```{r}
+g <- ggplot(DT_raw, aes(preferred_foot, wage_eur/1000))
+g + geom_boxplot(varwidth=T, fill="plum", outlier.alpha = 0.4) + scale_y_log10(breaks=c(1,10,100,1000), limits=c(1,1000)) +
+  labs(title="Box plot", 
+         subtitle="Logarithmic wages by foot preference",
+         x="Preferred Foot",
+         y="Wage('€000)")
+```
+<br/>
+
+### Scatterplot of wage & age
+It may be that as age (and experience) increases, wage increases. This is likely up to a certain age, after which the wage will begin to decrease. To test for this correlation, we run the following boxplot. 
+```{r}
+ggplot(DT_raw, aes(x=age, y=wage_eur/1000)) + geom_point(size=1.5) +
+labs(title="Scatterplot of Wage vs Age",
+       x="Age", y = "Wage")
+```
+
+### Color Correlation Plots
+The following two plots indicate correlations between a selection of variables. We will focus on their correlation with wage, our dependent variable. In the first figure we can see that age is lowly correlated with wage. We had already observed this in the previous scatterplot, where there appears to be a concave relationship. Height, weight and preferred foot have no influence on wages. What is highly correlated, is the international reputation. This variable already contains existing skills, but also other (unmeasured) skills such as media presence and marketability. 
+Interestingly, there is no correlation between work rate and wage. Team position seems to not be correlated with wage, but predictably other skills (such as shooting, passing & dribbling) are positively correlated; the better you are at them, the higher your wage. 
+
+```{r}
+M<-cor(DT_fact[,2:10])
+head(round(M,2))
+corrplot(M, method="color")
+
+M<-cor(DT_fact[,c(5,11:20)])
+head(round(M,2))
+corrplot(M, method="color")
+```
+<br/>
+
+### Correlation between movement abilities
+Although wage is extremely skewed, we wondered if this was also the case with other variables, such as player's ability to move. The plot below tells us that movement skills are approximately normally distributed, and they are also quite strongly correlated. If a player is good in one type of movement, he is likely to also be good in other types. 
+
+#### Drawing a sample for easier visualisation
+```{r}
+DT_rawsmall <- sample_n(DT_raw,1000)
+DT_factsmall <- sample_n(DT_raw,1000)
+```
+
+```{r}
+stats_salary_cor <- 
+  DT_rawsmall %>% 
+  select(wage_eur, movement_acceleration, movement_sprint_speed, movement_agility, movement_reactions, movement_balance)
+ggpairs(stats_salary_cor)
+``` 
+```
+
