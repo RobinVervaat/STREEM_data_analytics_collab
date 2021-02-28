@@ -1,0 +1,173 @@
+---
+title: "Data analytics for economists: Assignment I"
+author: "HUONG"
+output: 
+  html_document:
+    number_sections: TRUE
+---
+
+<style type="text/css">
+body{ font-size: 15pt;}
+pre {font-size: 12px;}
+p {line-height: 1.5em;}
+p {margin-bottom: 1em;}
+p {margin-top: 1em;}
+</style>
+
+```{r include=FALSE}
+knitr::opts_chunk$set(cache=F) # change it to T if you want to store results already produced. Note that the saved results will not be overwritten if you did not name each code chunk. Use it with caution.
+```
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(glmnet)
+library(caret)
+library(xgboost)
+library(dplyr)
+```
+
+
+
+### Penalized regression
+Next, we perform penalized regressions with a nested cross-validation to tune the regularization parameter $\lambda$. The outer loop contains five folds and each inner loop has ten folds. We explore different values of the hyperparameter $\alpha$, wich results in different types of regularization :  
+
+
+- Ridge : $\alpha$ = 0
+- Lasso : $\alpha$ = 1
+- Elastic net : $\alpha$ = 0.25 , 0.5, 0.75
+
+
+```{r}
+MMSE <- matrix(NA, nrow=5, ncol=6) 
+
+colnames(MSE) <- c("OLS", "ridge", "elastic0.25", "elastic0.5","elastic0.75", "LASSO")
+
+set.seed(1)
+folds <- createFolds(1:nrow(DT), list=F, k= 5)
+
+for (k in 1:5){
+  test <- DT[folds==k,] 
+  train <- DT[folds!=k,] 
+
+  X_train <- model.matrix(wage_eur ~ . , train[, -c("player_ID")])[, -1] 
+  X_test <- model.matrix(wage_eur ~ . , test[, -c("player_ID")])[, -1] 
+  
+  Y_train <- train$wage_eur
+  Y_test <- test$wage_eur
+  
+  ols <- lm(wage_eur ~ ., train[, -"player_ID"])
+  Y_pred_ols <- predict(ols, test)
+  
+  set.seed(1)
+  ridge.cv <- cv.glmnet(X_train, Y_train, alpha=0, nfolds=10)
+  elastic0.25.cv <- cv.glmnet(X_train, Y_train, alpha=0.25, nfolds=10)
+  elastic0.5.cv <- cv.glmnet(X_train, Y_train, alpha=0.5, nfolds=10)
+  elastic0.75.cv <- cv.glmnet(X_train, Y_train, alpha=0.75, nfolds=10)
+  lasso.cv <- cv.glmnet(X_train, Y_train, alpha=1, nfolds=10)
+
+  Y_pred_ridge <- predict(ridge.cv, X_test, s="lambda.min")
+  Y_pred_elastic0.25 <- predict(elastic0.25.cv, X_test, s="lambda.min")
+  Y_pred_elastic0.5 <- predict(elastic0.5.cv, X_test, s="lambda.min")
+  Y_pred_elastic0.75 <- predict(elastic0.75.cv, X_test, s="lambda.min")
+  Y_pred_lasso <- predict(lasso.cv, X_test, s="lambda.min")
+  
+  MSE[k, "OLS"] <-  mean((Y_test - Y_pred_ols)^2)
+  MSE[k, "elastic0.25"] <-  mean((Y_test - Y_pred_elastic0.25)^2)
+  MSE[k, "elastic0.5"] <-  mean((Y_test - Y_pred_elastic0.5)^2)
+  MSE[k, "elastic0.75"] <-  mean((Y_test - Y_pred_elastic0.75)^2)
+  
+  
+  MSE[k, "ridge"] <-  mean((Y_test - Y_pred_ridge)^2)
+  MSE[k, "LASSO"] <-  mean((Y_test - Y_pred_lasso)^2)
+}
+colMeans(MSE)
+elastic0.5.cv$lambda.min
+
+```
+
+The above results indicate that $\alpha$ = 0.5 with $\lambda$ = 47.2 yield the lowest MSE. We then apply these values to obtain the prediction from the hold-out test set. As expected, this method provides a better prediction score than the OLS. However, we believe there is room for improvement. 
+
+### Gradient boosting 
+The above Random Forest is a bagging ensemble method where  trees ( weak learners) are trained in paralell using a random sample of the data and the results are obtained at the end of the process by averaging. Next, we perform another tree-based ensemble method that is based on boosting where trees are trained one at a time - Gradient Boosting. In this method, the weak learners correct the errors of the previous weak learners, meaning that the results are combined along the process, instead of at its end. We use XGBoost to implement the gradient boosting algorithm due to its computational feasibility and well-known good performance.  
+
+For this method, we use all of our dataset as the training set. In order to tune parameters, we create a grid of different values for : the learning rate "eta", the maximum  depth of a tree "max_depth", the minium sum of weights of observations required in a leaf node "min_child_weight", the portion of observations to be randomly sampled for each tree "subsample".  This results in 162 combinations of different parameters. 
+
+
+```{r}
+
+X_train <- model.matrix(wage_eur ~ . , AB[, -c("player_ID")])[, -1] 
+Y_train <- DT$wage_eur  
+
+hyper_grid <- expand.grid(
+  eta = c(.01, .05, 0.1),
+  max_depth = c(5 : 10),
+  min_child_weight = c(1, 3, 5),
+  subsample = c(.5, 0.65, .8),
+  optimal_trees = 0,               # a place to contain results
+  min_RMSE = 0                     # a place to contain results
+)
+
+nrow(hyper_grid)
+
+```
+
+We then train our model with cross-validation using xgb.cv
+
+```{r}
+# grid search 
+for(i in 1:nrow(hyper_grid)) {
+  
+  params <- list(
+    eta = hyper_grid$eta[i],
+    max_depth = hyper_grid$max_depth[i],
+    min_child_weight = hyper_grid$min_child_weight[i],
+    subsample= hyper_grid$subsample[i]
+    )
+  
+   set.seed(1)
+  
+  # train model
+  xgb.tune <- xgb.cv(
+    params = params,
+    data =  as.matrix(X_train), 
+    label = Y_train,
+    nfold = 5,
+    nrounds = 5000,
+    objective = "reg:squarederror",  # for regression models
+    verbose = 0,               # silent,
+    early_stopping_rounds = 20 # stop if no improvement for 10 consecutive trees
+  )
+  
+  # add min training error and trees to grid
+  hyper_grid$optimal_trees[i] <- which.min(xgb.tune$evaluation_log$test_rmse_mean)
+  hyper_grid$min_RMSE[i] <- min(xgb.tune$evaluation_log$test_rmse_mean)
+}
+
+hyper_grid %>%
+  dplyr::arrange(min_RMSE) %>%
+  head(10)
+ 
+```
+
+From the above table, we obtain the minimum RMSE with eta = 0.01, max-depth = 7, min_child_weight = 5, subsample = 65, nrounds =800. We use these values for our entire training set and the prediced values for our hold-out test set. 
+
+```{r}
+#final xgbfit
+xgb.fit = xgboost(data =  as.matrix(X_train), 
+                  label = Y_train, 
+                  max.depth = 7,  
+                  nrounds = 800, # optimal trees
+                  eta = 0.01, 
+                  min_child_weight=5,
+                  subsample = 0.65, 
+                  verbose=0)
+
+Y_pred_xgb = predict(xgb.fit, as.matrix(X_final_test))
+
+```
+
+This XGBoost does not improve our prediction as much as the Random Forest. Given that Random Forest is less prone to overfitting than Gradient Boosting, we believe Random Forest outperforms Gradient boosting because of the noise in our dataset, which results in overfitting. 
+
+
+
