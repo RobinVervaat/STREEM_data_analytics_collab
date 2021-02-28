@@ -1,0 +1,249 @@
+---
+title: "Data analytics for economists: Assignment I"
+author: "Robin"
+date: "2/27/2021"
+output: 
+  html_document:
+    number_sections: TRUE
+---
+
+<style type="text/css">
+body{ font-size: 15pt;}
+pre {font-size: 12px;}
+p {line-height: 1.5em;}
+p {margin-bottom: 1em;}
+p {margin-top: 1em;}
+</style>
+
+```{r include=FALSE}
+knitr::opts_chunk$set(cache=F) # change it to T if you want to store results already produced. Note that the saved results will not be overwritten if you did not name each code chunk. Use it with caution.
+```
+
+
+
+
+
+```{r}
+library(data.table)
+library(ggplot2)
+
+
+library(tuneRanger)
+library(mlr)
+library(OpenML)
+
+library(e1071)
+
+pacman::p_load(rpart, rpart.plot, vip, pROC, randomForest, gbm)
+
+
+```
+
+```{r}
+DT_raw <- fread("https://www.dropbox.com/s/5rr2ysw6tjcnbpj/train.csv?dl=1")
+test_submission_raw <- fread("https://www.dropbox.com/s/395thqjfxf7k4wi/test.csv?dl=1")
+
+DT_fact <- copy(DT_raw)
+test_submission_fact <- copy(test_submission_raw)
+
+
+```
+
+## Some data processing is needed to meld the data into certain applications 
+Factorize data. Manual process to ensure consistency for both the test and training sets
+
+```{r}
+#DT dataset
+DT_fact$preferred_foot <- invisible(sapply(DT_fact$preferred_foot,switch,'Right'=1,'Left'=2,'undefined'=""))
+DT_fact$work_rate <- invisible(sapply(DT_fact$work_rate,switch,'Low/Medium'=1,'High/Medium'=2,'Medium/Medium'=3,'Medium/Low'=4,'Medium/High'=5,'High/High'=6,'High/Low'=7,'Low/Low'=8,'Low/High'=9,'undefined'=""))
+DT_fact$team_position <- invisible(sapply(DT_fact$team_position,switch,'LCB'=1,'SUB'=2,'RES'=3,'LS'=4,'RB'=5,'ST'=6,'RM'=7,'LCM'=8,'LB'=9,'LM'=10,'RCB'=11,'RW'=12,'CAM'=13,'RDM'=14,'RWB'=15,'LF'=16,'CDM'=17,'LW'=18,'CB'=19,'LDM'=20,'CM'=21,'RCM'=22,'LAM'=23,'CF'=24,'RS'=25,'RF'=26,'RAM'=27,'LWB'=28,'undefined'=""))
+
+#Test submission factorization. Identical factorisation criteria
+test_submission_fact$preferred_foot <- invisible(sapply(test_submission_fact$preferred_foot,switch,'Right'=1,'Left'=2,'undefined'=""))
+test_submission_fact$work_rate <- invisible(sapply(test_submission_fact$work_rate,switch,'Low/Medium'=1,'High/Medium'=2,'Medium/Medium'=3,'Medium/Low'=4,'Medium/High'=5,'High/High'=6,'High/Low'=7,'Low/Low'=8,'Low/High'=9,'undefined'=""))
+test_submission_fact$team_position <- invisible(sapply(test_submission_fact$team_position,switch,'LCB'=1,'SUB'=2,'RES'=3,'LS'=4,'RB'=5,'ST'=6,'RM'=7,'LCM'=8,'LB'=9,'LM'=10,'RCB'=11,'RW'=12,'CAM'=13,'RDM'=14,'RWB'=15,'LF'=16,'CDM'=17,'LW'=18,'CB'=19,'LDM'=20,'CM'=21,'RCM'=22,'LAM'=23,'CF'=24,'RS'=25,'RF'=26,'RAM'=27,'LWB'=28,'undefined'=""))
+
+```
+
+
+### Important parameters defining the regression model
+```{r}
+Data_splitting_seed_set = seq(120,124, by = 1) #seeds through which ten folds of the data are created for evaluation of methods
+Model_stochastics_seed_set = seq(200,204, by = 1) #set of seeds to initiate stochastic models. aids in reproducibility
+
+```
+
+
+# Support Vector Machines
+Support vector machine learning is a method in which the data is iteratively broken up through hyperplanes in n-dimensional space. SVM is best understood by examining graphically what it does in a simplified 2 dimensional space. The image below gives an illustrations of such hyperplane dividing data in two spaces (and eventually) such that the divide is as strong as possible. This latter point is measured by the margin (function) and is the reason SVM is also known as a maximal margin classifier.
+
+As one can imagine in these cases the data closest to the plane will weigh much stronger on the shape of the hyperplane than observations far away. 
+
+Inline-style: 
+![alt text](https://techvidvan.com/tutorials/wp-content/uploads/sites/2/2020/05/Support-Vector-Machines-1.jpg)
+[image source](https://techvidvan.com/tutorials/svm-in-r/)
+
+
+The basis for our SVM analysis is the package E1071.This package is quite user friendly and allowed us to tune the model through several parameters. However, to set a baseline a basic SVM regression on a simple 80/20 split fo the data was performed to evaluate computational efforts and evaluate tuning strategies.
+
+```{r eval = FALSE}
+
+#create data split with reproducibility 
+set.seed(1996)
+train_ind <- sample(1:nrow(DT_fact), 0.8*nrow(DT_fact))
+
+train <- DT_fact[train_ind,]
+test <- DT_fact[-train_ind,]
+
+Y_test <- test$wage_eur
+
+#since the model will contain some stochastics, it is important to set a seed.
+set.seed(1996)
+
+#Train model on training set. Making sure to exclude player ID
+svm_model <- svm(wage_eur ~ ., data = train[, -"player_ID"])
+
+#show some basic parameters defining the SVM model
+summary(svm_model)
+
+
+#after model is made, calculate the MSE
+SVM_predictions <- predict(svm_model, test[, -c("player_ID","wage_eur")])
+SVM_MSE = mean( (Y_test - SVM_predictions)^2 )
+```
+The model trains in about one minute, not too bad. The results however, as compared to the tree model are quite similar. The gap with the baseline (untuned) Random forest model is 14 million / 306 million = around 5%. Perhaps tuning can help the model be more competitive. The computational effort in any case seems quite a lot lower.
+```{r eval = FALSE}
+SVM_MSE
+```
+Before continuing a quick investigation into the application of shrinking in terms of the SVM function was evaluated. Shrinking works in a similar way to the penalization method which we have discussed in earlier parts of this paper. By default the SVM from the E1071 package has shrinkage on, but from ealier investigations it was shown that pure shrinkage might not always yield the best results. In order to investigate we put this assumption to the test! We take 5 seeds and evaluate the effect of having this active vs. not active, below we present the results.
+
+```{r eval = FALSE}
+shrinkage_test <- matrix(NA, nrow=250, ncol=4)
+colnames(shrinkage_test) <- c("data_split_seed","model_tune_seed","shrinkage","MSE")
+i = 1
+
+for (data_split_seed_value in 1:5){
+  for (shrink_tf in c(TRUE,FALSE)){
+    #create data split with reproducibility 
+    set.seed(data_split_seed_value)
+    train_ind <- sample(1:nrow(DT_fact), 0.8*nrow(DT_fact))
+    
+    train <- DT_fact[train_ind,]
+    test <- DT_fact[-train_ind,]
+    
+    Y_test <- test$wage_eur
+    
+    #since the model will contain some stochastic, it is important to set a seed.
+    set.seed(1996)
+    
+    #Train model on training set. Making sure to exclude player ID
+    svm_model <- svm(wage_eur ~ ., data = train[, -"player_ID"], shrinking = shrink_tf)
+    
+
+    #after model is made, calculate the MSE
+    SVM_predictions <- predict(svm_model, test[, -c("player_ID","wage_eur")])
+    SVM_MSE = mean( (Y_test - SVM_predictions)^2 )
+    
+    #save results from tuning
+    shrinkage_test[i, "data_split_seed"] <-  data_split_seed_value
+    shrinkage_test[i, "model_tune_seed"] <-  1996
+    shrinkage_test[i, "shrinkage"] <-  shrink_tf
+    shrinkage_test[i, "MSE"] <-  SVM_MSE
+    
+    
+    
+    #next row for next result
+    i = i+1
+  }
+}
+
+
+
+```
+
+```{r eval = FALSE}
+head(shrinkage_test)
+```
+Looking at the data we see that with shrinkage on, the estimations are every so slightly better in every case and as such we continue with this active for future predictions.
+
+We now choose two more model parameters to further investigate. These model parameters are evaluated for the set of 5 seeds and then compared with one another.The first parameter investigated is cost parameter for the violation of regularization terms, at default this is one, but two higher and one lower value of 0.5,2 and 10 respectively were considered. Finally, we also took a look at the epsilon parameter. This value is by default 0.1, but will be varied from 0.05 to 0.2.
+
+
+```{r eval = FALSE}
+SVM_output <- matrix(NA, nrow=250, ncol=5)
+colnames(SVM_output) <- c("data_split_seed","model_tune_seed","cost","epsilon","MSE")
+i = 1
+
+
+#5 outer loops,
+#4 cost items
+#3 epsilon values
+#= 5*4*3 = 60 options
+
+for (data_split_seed_value in 1:5){
+  for (cost_item in c(0.5,1,2,10)){
+    for (epsilon_item in c(0.05,0.1,0.2)){
+      
+      #create data split with reproducibility 
+      set.seed(data_split_seed_value)
+      train_ind <- sample(1:nrow(DT_fact), 0.8*nrow(DT_fact))
+      
+      train <- DT_fact[train_ind,]
+      test <- DT_fact[-train_ind,]
+      
+      Y_test <- test$wage_eur
+      
+      #since the model will contain some stochastic, it is important to set a seed.
+      set.seed(1996)
+      
+      #Train model on training set. Making sure to exclude player ID
+      svm_model <- svm(wage_eur ~ ., data = train[, -"player_ID"], epsilon = epsilon_item, cost = cost_item)
+      
+  
+      #after model is made, calculate the MSE
+      SVM_predictions <- predict(svm_model, test[, -c("player_ID","wage_eur")])
+      SVM_MSE = mean( (Y_test - SVM_predictions)^2 )
+      
+      #save results from tuning
+      SVM_output[i, "data_split_seed"] <-  data_split_seed_value
+      SVM_output[i, "model_tune_seed"] <-  1996
+      SVM_output[i, "cost"] <-  cost_item
+      SVM_output[i, "epsilon"] <-  epsilon_item
+      SVM_output[i, "MSE"] <-  SVM_MSE
+      
+      
+      
+      #next row for next result
+      i = i+1
+    }
+  }
+}
+
+
+  
+```
+
+
+```{r eval = FALSE}
+head(SVM_output)
+```
+
+A quick analysis of the data shows that changing the epsilon has little effect. On average, the best performing lambda the stock lambda for all different values of the cost. The cost showed a far wider space of possible outcomes. The best performing cost paramater was also not the default value, but rather the highst cost paramater at a cost of 10. This is 10 times larger than the default value and managed to decrease the MSE by nearly 10% as compared to the baseline value of cost. Computational time between runs showed little to no difference.
+
+Using the best evaluated values for parameters, a model training was performed with the full dataset in order to produce a prediction for the competition test data set.
+
+
+```{r}
+#best performing SVM model
+svm_model_best <- svm(wage_eur ~ ., data = DT_fact[, -"player_ID"], epsilon = 0.1, cost = 10)
+```
+
+```{r}
+our_prediction <- predict(svm_model_best, test_submission_fact)
+
+submit <- data.table(Id = test_submission_fact$player_ID, Predicted = our_prediction)
+# fwrite(submit, "./2020_02_28-best_performing_SVM.csv")
+```
+
+
+In conclusion we find that SVM performs around the medium of the pack for prediction methods. The method is able to outperform the basic regression based methods, but falls short of the performance of the tree based methods evaluated earlier. One of the main advantages of this method was however how great it worked in addressing the memory concerns highlighted in the tuning, pruning and learning of the randomforest model. SVM allowed for a lot of tuning possibilities and a lot of customization. We found that after tuning the performance (as measured in MSE) was improved by over 10%, one iof the largest tuning gaps found of any model. In future prediction problems, SVM will definitely return as a method to consider.
