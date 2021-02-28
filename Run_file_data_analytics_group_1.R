@@ -1,4 +1,4 @@
-# In case the 2nd submission file is best, the different parameters are: seed=321 & number of trees = 2000
+# In case the 2nd submission file is best, the different parameters are: in line 34 -> seed=321 & in line 38 -> num.trees = 2000
 library(data.table)
 library(ggplot2)
 library(tuneRanger)
