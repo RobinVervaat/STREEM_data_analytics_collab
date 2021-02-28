@@ -21,153 +21,15 @@ knitr::opts_chunk$set(cache=F) # change it to T if you want to store results alr
 
 
 
-
-***
-
-
-# Document overhead and initialisation
-
-##Read in packages
-
-```{r}
-library(data.table)
-library(ggplot2)
-
-
-library(tuneRanger)
-library(mlr)
-library(OpenML)
-
-library(e1071)
-
-pacman::p_load(rpart, rpart.plot, vip, pROC, randomForest, gbm)
-
-
-```
-
-## Download the data and present some basic statistics.
-1 Download test and training sets. 
--- Training = DT
--- Test = test_submission
-
-2 create copies of the data to enable processing of different data sets for different methods
-
-```{r}
-DT_raw <- fread("https://www.dropbox.com/s/5rr2ysw6tjcnbpj/train.csv?dl=1")
-summary(DT_raw)
-
-test_submission_raw <- fread("https://www.dropbox.com/s/395thqjfxf7k4wi/test.csv?dl=1")
-
-DT_fact <- copy(DT_raw)
-test_submission_fact <- copy(test_submission_raw)
-
-
-```
-
-Something we do note from the distribution of wage shows some outliers. We hypothesise this is the top players such as the Ronaldo's and Messi's of the world. We however also must not that there is likely no (linear) relationship to only the skill of the player. Likely these players their salary is in part so high since they are very popular with fans and bring in additional revenue through that popularity (e.g. sponsorship deals.).
-
-The histogram below depicts the effect very well that was hinted at by the summary statistics
-
-```{r}
-hist(DT_raw$wage_eur,  breaks = 1500, xlab = "Wage in Euros")
-```
-
-
-## Some data processing is needed to meld the data into certain applications 
-Factorize data. Manual process to ensure consistency for both the test and training sets
-
-```{r}
-#DT dataset
-DT_fact$preferred_foot <- invisible(sapply(DT_fact$preferred_foot,switch,'Right'=1,'Left'=2,'undefined'=""))
-DT_fact$work_rate <- invisible(sapply(DT_fact$work_rate,switch,'Low/Medium'=1,'High/Medium'=2,'Medium/Medium'=3,'Medium/Low'=4,'Medium/High'=5,'High/High'=6,'High/Low'=7,'Low/Low'=8,'Low/High'=9,'undefined'=""))
-DT_fact$team_position <- invisible(sapply(DT_fact$team_position,switch,'LCB'=1,'SUB'=2,'RES'=3,'LS'=4,'RB'=5,'ST'=6,'RM'=7,'LCM'=8,'LB'=9,'LM'=10,'RCB'=11,'RW'=12,'CAM'=13,'RDM'=14,'RWB'=15,'LF'=16,'CDM'=17,'LW'=18,'CB'=19,'LDM'=20,'CM'=21,'RCM'=22,'LAM'=23,'CF'=24,'RS'=25,'RF'=26,'RAM'=27,'LWB'=28,'undefined'=""))
-
-#Test submission factorization. Identical factorisation criteria
-test_submission_fact$preferred_foot <- invisible(sapply(test_submission_fact$preferred_foot,switch,'Right'=1,'Left'=2,'undefined'=""))
-test_submission_fact$work_rate <- invisible(sapply(test_submission_fact$work_rate,switch,'Low/Medium'=1,'High/Medium'=2,'Medium/Medium'=3,'Medium/Low'=4,'Medium/High'=5,'High/High'=6,'High/Low'=7,'Low/Low'=8,'Low/High'=9,'undefined'=""))
-test_submission_fact$team_position <- invisible(sapply(test_submission_fact$team_position,switch,'LCB'=1,'SUB'=2,'RES'=3,'LS'=4,'RB'=5,'ST'=6,'RM'=7,'LCM'=8,'LB'=9,'LM'=10,'RCB'=11,'RW'=12,'CAM'=13,'RDM'=14,'RWB'=15,'LF'=16,'CDM'=17,'LW'=18,'CB'=19,'LDM'=20,'CM'=21,'RCM'=22,'LAM'=23,'CF'=24,'RS'=25,'RF'=26,'RAM'=27,'LWB'=28,'undefined'=""))
-
-```
-
-
-### Important parameters defining the regression model
-```{r}
-Data_splitting_seed_set = seq(120,124, by = 1) #seeds through which ten folds of the data are created for evaluation of methods
-Model_stochastics_seed_set = seq(200,204, by = 1) #set of seeds to initiate stochastic models. aids in reproducibility
-
-```
-
-
-# Regression methods
-
-In the section below we discuss and evaluate several machine leaning methods to predict footballers wage as a function of a broad set of performance criteria. The section and methods can be broadly broken up into 4 main methods:
-
-1 regression-based methods
-2 tree-based methods
-3 support vector machine 
-4 neural networks & ensemble methods
-
-Each section will enjoy discussion and will feature several sub-methods. The method for comparison is mainly focused around the Mean Squared Error or MSE for short. This metric is easy to compute and facilitates easy comparison and aggreation between methods.Of course, as the sections will show, other metrics are considered in the tuning and selection of methods. Finally, the best performing model will be highlighted in a seperate subsection alongside which a discussion of the great performance of this method will be given.
-
-
-## regression-based methods
-
-### OLS
-We start with the most basic method evaluated in the course of this document Ordinary Least Squared or OLS for short. OLS determines the best linear combination of estimators to determine the independent variable. In order to get a robust statistic for OLS (and as we will repeat for every method) we generate several folds of data according to the  seed parameters defined earlier in the document.
-
-
-
-```{r}
-
-OLS_outcome <- matrix(NA, nrow=10, ncol=2)
-colnames(OLS_outcome) <- c("data_split_seed","MSE")
-i = 1
-
-for (data_seed_value in Data_splitting_seed_set){
-  #create 80/20 split based on the data split seed. (outer loop)
-  set.seed(data_seed_value)
-  train_ind <- sample(1:nrow(DT_fact), 0.8*nrow(DT_fact))
-  
-  train <- DT_fact[train_ind,]
-  test <- DT_fact[-train_ind,]
-  
-  Y_test <- test$wage_eur
-  
-  #teach actual model
-  OLS_mod <- lm(wage_eur ~ ., train[, -c("player_ID")])
-  
-  #after model is made, calculate the MSE
-  Y_pred_ols <- predict(OLS_mod, test)
-  MSE <- mean((Y_test - Y_pred_ols)^2)
-  
-  #save results
-  OLS_outcome[i, "data_split_seed"] <-  data_seed_value
-  OLS_outcome[i, "MSE"] <-  MSE
-  
-  #next row for next result
-  i = i+1
-}
-
-```
-
-
-### A more advanced method considered was the elasticnet. Elasticnet is a combination of Ridge and Lasso regression.
-
-HUONG will do this section!
-
-
-
-
-
-# Tree based models
-Tree based models are another popular modeling method in Machine learning. ALthough often though of as a classification method, Trees can also be used to make numerical predictions. In the section below a handful of tree based methods are evaluated. Overall the tree based metrics are some of the best performing of all evaluated methods. 
-
-Tree based methods are oftentimes stochastic in nature. In order to deal with this, additional seeds are set in the model before calling the tree growing algorithm.
-
-## K - Nearest Neighbour
-Thomas
-
 ## Random Forest
+
+
+Forest based, or in more general terms tree based methods involve stratifying or segmenting the predictor space into a number of simple regions. To make a prediction for a given observation, we can use the mean or the mode of the training observations in the region to which it belongs. This method is quite intuitive in its working and can be graphically depicted. Below we see an example of how the paramater space can be divided using two independent variables.
+
+| ![Hermon Trees](https://drive.google.com/uc?export=view&id=1RrtaJEHcNfXOqTSAIwnFOs3RgY-KTZX1) | 
+|:--:| 
+| *Space* Recursive binary splitting example with two predictors. Source: Hyeokmoon Kweon, Data analytics for economists, VU Amsterdam |
+
 
 For the RandomForest method, the package RandomForest was initially used. As usual, model performance will be evaluated using several folds of the data. The RandomForest package (and identically named method) contain several tuning parameters. In the loop below we will focus on manually tuning four parameters, namely the number of trees to grow, "mtry" or the number of variables to sample at each split, the sample fraction and finally, the minimum node size at the final branch of each tree. 
 
@@ -175,7 +37,7 @@ From initial investigations it was determined that models performed best under a
 
 
 First we set a baseline with an un-tuned tree. The number of trees is varied from the baseline 500 to a relatively large (but still computationally tractable number of 3750)
-```{r}
+```{r eval=FALSE}
 RF_tree_var <- matrix(NA, nrow=15, ncol=3)
 colnames(RF_tree_var) <- c("data_split_seed","MSE - low tree","MSE - high tree")
 i = 1
@@ -220,16 +82,15 @@ RF_tree_var
 
 We see that for the most part the trees with a larger ntree parameter perform better than their counterparts with lower Ntree parameter. In additon we observe quite a lot 
 Annecdotally we can also inspect one tree to see how the branches are split, for which the last tree was chosen.
-```{r}
+```{r eval=FALSE}
 vip(RF_high)
 ```
 
 
 After seeing that more trees seemed to be slight beneficial we investigated the mtry parameter. A two stage tuning was performed. this tuning allowed us to pick an optimal (post prevelent )
 
-#define the Tree based model in a function
-#tree tuning block 1
-```{r}
+define the Tree based model in a function: tree tuning block 1
+```{r eval=FALSE}
 
 best_mtry_save <- matrix(NA, nrow=250, ncol=5)
 colnames(best_mtry_save) <- c("data_split_seed","model_tune_seed","trees","best_mtry","best_OOB_error")
@@ -285,12 +146,12 @@ for (data_split_seed_value in Data_splitting_seed_set){
 
 Now we evaluate and choose the best mtry
 
-```{r}
+```{r eval=FALSE}
 min(best_mtry_save)
 ```
 
-#tree tuning block 2
-```{r}
+tree tuning block 2
+```{r eval=FALSE}
 
 #now run forest based on the optimum found in the previous set and get a baseline MSE over several seedings
 mtry_chosen = 36
@@ -345,13 +206,13 @@ We see that after tuning the Mtry parameter it was altered slightly from the pre
 
 First we start by defining the task using the regr.task framework of MLR. For this example we use the full dataset as the package does internal cross validation. but smaller samples were used in similar loops as the examples shown above in order to evaluate the performance of the tuned model vs the other two RF trees.
 
-```{r}
+```{r eval=FALSE}
 regr.task = makeRegrTask(id = "player_ID", data = DT_fact, target = "wage_eur")
 ```
 
 Our evaluation method for the package was set as MSE. Others are also available, but this method stays in line with the previous method of testing.
 
-```{r}
+```{r eval=FALSE}
 # Estimate runtime
 estimateTimeTuneRanger(regr.task)
 
@@ -368,32 +229,20 @@ res$model
 
 On average our MSE for the tuned model was around 10% lower than that of the untuned tree based models, which were already better performing that most other regression methods. The large drawback lies in the computational times for the tree based model. this fact is only increased by the intervention of the addiotional tuning step. Although longer, the "toughest iterations" were still able to be completed in around 20 to 25 minutes which makes the model just about tractable enough for the application we are now interested in.
 
-```{r}
+```{r eval=FALSE}
 # our_prediction <- predict(RF, test_submission)
 our_prediction <- predict(res$model, newdata = test_submission_fact)
 View(our_prediction$data)
 ```
 
-```{r}
+```{r eval=FALSE}
 #sample_submission <- fread("https://www.dropbox.com/s/cap0jhc8uxv5u26/sampleSubmission.csv?dl=1")
 
 submit <- data.table(Id = test_submission_fact$player_ID, Predicted = our_prediction$data)
 fwrite(submit, "./2020_02_27_submit_tree_tuned_by_tuneRanger.csv")
 
-
 ```
 
+We see that of the methods evaluated so far, the random forest seems quite robust for the presence of outliers, something that seemed to hurt the performance of the earlier linear based prediction methods. The drawback however is that what we gain in robustness (and for that case performance) we loose in understanding of the model. THe randomforest model essentially operates as a black box with little to no information on the exact operation. We can regain some of this information by examing predictor importance plots, but they still remain far less interpretable than the earlier models discussed.
 
-
-## Boosted Tree (XGBOOST?)
-Huong
-
-
-# support vector machine 
-Fidel
-
-# neural networks & ensemble methods
-
-
-# Support Vector Machines
-Robin
+Besides this we did see great improvements when the model is tuned. This tuning took some computational effort and most of all memory resources. This fact alone made the randomforest model one of the most intensive methods evaluated. In conclusion we are quite happy with the perdormance of the randomforest model. It takes some effort to tune the model, but the overall performance and ease of use is definitely worth the investment.
